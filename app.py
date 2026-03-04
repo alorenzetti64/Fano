@@ -20,6 +20,9 @@ DB_DIR = Path("data")
 DB_DIR.mkdir(exist_ok=True)
 DB_PATH = DB_DIR / "spese.db"
 
+ASSETS_DIR = Path("assets")
+SIDEBAR_IMAGE = ASSETS_DIR / "nonni.png"
+
 TIPOLOGIE = ["Badanti", "Bollette", "Condominio", "Varie"]
 
 # -----------------------------
@@ -27,6 +30,7 @@ TIPOLOGIE = ["Badanti", "Bollette", "Condominio", "Varie"]
 # -----------------------------
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
+
 
 def init_db():
     with get_conn() as conn:
@@ -44,6 +48,7 @@ def init_db():
         )
         conn.commit()
 
+
 def insert_spesa(d: date, importo_eur: float, causale: str, tipologia: str, link: str | None):
     importo_cents = int(round(importo_eur * 100))
     with get_conn() as conn:
@@ -52,6 +57,7 @@ def insert_spesa(d: date, importo_eur: float, causale: str, tipologia: str, link
             (d.isoformat(), importo_cents, causale.strip(), tipologia, (link or "").strip() or None),
         )
         conn.commit()
+
 
 def update_spesa(spesa_id: int, d: date, importo_eur: float, causale: str, tipologia: str, link: str | None):
     importo_cents = int(round(importo_eur * 100))
@@ -66,10 +72,12 @@ def update_spesa(spesa_id: int, d: date, importo_eur: float, causale: str, tipol
         )
         conn.commit()
 
+
 def delete_spesa(spesa_id: int):
     with get_conn() as conn:
         conn.execute("DELETE FROM spese WHERE id = ?", (spesa_id,))
         conn.commit()
+
 
 def load_spese() -> pd.DataFrame:
     with get_conn() as conn:
@@ -83,6 +91,7 @@ def load_spese() -> pd.DataFrame:
     df["importo_eur"] = df["importo_cents"] / 100.0
     df.drop(columns=["importo_cents"], inplace=True)
     return df
+
 
 # -----------------------------
 # DROPBOX HELPERS (preview)
@@ -100,12 +109,15 @@ def dropbox_to_embed_url(url: str) -> str:
     except Exception:
         return url
 
+
 def looks_like_image(url: str) -> bool:
     u = url.lower()
     return any(u.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"])
 
+
 def looks_like_pdf(url: str) -> bool:
     return url.lower().endswith(".pdf")
+
 
 def render_doc_preview(url: str, height: int = 520):
     if not url:
@@ -120,6 +132,7 @@ def render_doc_preview(url: str, height: int = 520):
         st.info("Anteprima non disponibile per questo tipo di link. Usa il bottone per aprirlo.")
         st.link_button("Apri documento", embed)
 
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -129,6 +142,10 @@ st.title("Gestionale Nonni")
 st.caption("Radici forti, ali libere.")
 
 menu = st.sidebar.radio("Vai a:", ["➕ Inserisci spesa", "📊 Riepilogo e gestione", "⚙️ Impostazioni"])
+
+# Immagine sotto al menu (se presente)
+if SIDEBAR_IMAGE.exists():
+    st.sidebar.image(str(SIDEBAR_IMAGE), width="stretch")
 
 # ---- PAGE: INSERIMENTO ----
 if menu == "➕ Inserisci spesa":
@@ -159,11 +176,21 @@ if menu == "➕ Inserisci spesa":
         st.info("Nessuna spesa ancora.")
     else:
         show = df.head(20).copy()
-        show["importo_eur"] = show["importo_eur"].map(lambda x: f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
-        st.dataframe(
+        show["importo_eur"] = show["importo_eur"].map(
+            lambda x: f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+        st.data_editor(
             show[["id", "data", "tipologia", "causale", "importo_eur", "link"]],
             width="stretch",
             hide_index=True,
+            disabled=True,
+            column_config={
+                "link": st.column_config.LinkColumn(
+                    "Documento",
+                    help="Apri il documento collegato (Dropbox o altro).",
+                    display_text="Apri",
+                )
+            },
         )
 
 # ---- PAGE: RIEPILOGO + GESTIONE ----
@@ -175,7 +202,6 @@ elif menu == "📊 Riepilogo e gestione":
         st.info("Non ci sono dati da riepilogare.")
         st.stop()
 
-    # Filtri
     df["anno"] = pd.to_datetime(df["data"]).dt.year
     anni = sorted(df["anno"].unique().tolist(), reverse=True)
 
@@ -201,22 +227,20 @@ elif menu == "📊 Riepilogo e gestione":
     st.divider()
 
     st.write("### Totali per tipologia")
-    pivot = (
-        f.groupby("tipologia", as_index=False)["importo_eur"]
-        .sum()
-        .sort_values("importo_eur", ascending=False)
+    pivot = f.groupby("tipologia", as_index=False)["importo_eur"].sum().sort_values("importo_eur", ascending=False)
+    pivot["importo_eur"] = pivot["importo_eur"].map(
+        lambda x: f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
     )
-    pivot["importo_eur"] = pivot["importo_eur"].map(lambda x: f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
-    st.dataframe(pivot, width="stretch", hide_index=True)
+    st.data_editor(pivot, width="stretch", hide_index=True, disabled=True)
 
     st.divider()
 
     st.write("### Elenco spese")
-
     f_disp = f.sort_values(["data", "id"], ascending=[False, False]).copy()
-    f_disp["importo_eur"] = f_disp["importo_eur"].map(lambda x: f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
+    f_disp["importo_eur"] = f_disp["importo_eur"].map(
+        lambda x: f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+    )
 
-    # Tabella cliccabile: la colonna "Documento" diventa un link (Apri)
     st.data_editor(
         f_disp[["id", "data", "tipologia", "causale", "importo_eur", "link"]],
         width="stretch",
@@ -232,13 +256,11 @@ elif menu == "📊 Riepilogo e gestione":
     )
 
     st.divider()
-
     st.write("## Gestione: modifica / elimina")
 
     id_list = f_disp["id"].tolist()
     sel_id = st.selectbox("Scegli il record (ID)", id_list, index=0)
 
-    # riga originale (da f con importo numerico)
     row = f[f["id"] == sel_id].iloc[0]
     link_val = row["link"] if isinstance(row["link"], str) else ""
 
@@ -247,13 +269,15 @@ elif menu == "📊 Riepilogo e gestione":
         with st.form("form_edit"):
             d_new = st.date_input("Data (modifica)", value=row["data"])
             tip_new = st.selectbox("Tipologia (modifica)", TIPOLOGIE, index=TIPOLOGIE.index(row["tipologia"]))
-            imp_new = st.number_input("Importo (€) (modifica)", min_value=0.0, value=float(row["importo_eur"]), step=1.0, format="%.2f")
+            imp_new = st.number_input(
+                "Importo (€) (modifica)", min_value=0.0, value=float(row["importo_eur"]), step=1.0, format="%.2f"
+            )
             caus_new = st.text_input("Causale (modifica)", value=str(row["causale"]))
             link_new = st.text_input("Link documento (Dropbox) (modifica)", value=str(link_val))
 
             cA, cB = st.columns(2)
-            save = cA.form_submit_button("💾 Salva modifiche", width="stretch")
-            delete = cB.form_submit_button("🗑️ Elimina", width="stretch")
+            save = cA.form_submit_button("💾 Salva modifiche", use_container_width=True)
+            delete = cB.form_submit_button("🗑️ Elimina", use_container_width=True)
 
             if save:
                 if not caus_new.strip():
@@ -287,4 +311,6 @@ else:
         st.info("Nessun dato da esportare.")
     else:
         csv = df.drop(columns=["anno"], errors="ignore").to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Scarica CSV (backup)", data=csv, file_name="gestionale_nonni_backup.csv", mime="text/csv")
+        st.download_button(
+            "⬇️ Scarica CSV (backup)", data=csv, file_name="gestionale_nonni_backup.csv", mime="text/csv"
+        )
