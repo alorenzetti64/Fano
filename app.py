@@ -212,15 +212,27 @@ elif menu == "📊 Riepilogo e gestione":
     st.divider()
 
     st.write("### Elenco spese")
+
     f_disp = f.sort_values(["data", "id"], ascending=[False, False]).copy()
     f_disp["importo_eur"] = f_disp["importo_eur"].map(lambda x: f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
-    st.dataframe(
+
+    # Tabella cliccabile: la colonna "Documento" diventa un link (Apri)
+    st.data_editor(
         f_disp[["id", "data", "tipologia", "causale", "importo_eur", "link"]],
         width="stretch",
         hide_index=True,
+        disabled=True,
+        column_config={
+            "link": st.column_config.LinkColumn(
+                "Documento",
+                help="Apri il documento collegato (Dropbox o altro).",
+                display_text="Apri",
+            )
+        },
     )
 
     st.divider()
+
     st.write("## Gestione: modifica / elimina")
 
     id_list = f_disp["id"].tolist()
