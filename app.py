@@ -16,6 +16,20 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- UI SCALE (mobile) ---
+st.markdown(
+    """
+    <style>
+      html { font-size: 115%; }
+      /* rende un filo più leggibili anche input e tabelle */
+      .stTextInput input, .stNumberInput input, .stDateInput input, .stSelectbox div, .stTextArea textarea {
+        font-size: 1rem;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 DB_DIR = Path("data")
 DB_DIR.mkdir(exist_ok=True)
 DB_PATH = DB_DIR / "spese.db"
