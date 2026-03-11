@@ -20,7 +20,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      html { font-size: 115%; }
+      html { font-size: 130%; }
       /* rende un filo più leggibili anche input e tabelle */
       .stTextInput input, .stNumberInput input, .stDateInput input, .stSelectbox div, .stTextArea textarea {
         font-size: 1rem;
