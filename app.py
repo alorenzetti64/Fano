@@ -24,6 +24,7 @@ SIDEBAR_CANDIDATES = [
     ASSETS_DIR / "nonni.JPEG",
 ]
 
+# (Facoltativo) +15% font
 st.markdown(
     """
     <style>
@@ -42,21 +43,37 @@ def get_database_url() -> str:
     raise RuntimeError("DATABASE_URL non configurata (Streamlit Secrets o variabile ambiente).")
 
 def _add_param(dsn: str, kv: str) -> str:
+    # aggiunge un parametro query URI in modo semplice
     if "?" in dsn:
-        if kv.split("=")[0] in dsn:
+        key = kv.split("=")[0]
+        if f"{key}=" in dsn:
             return dsn
         return dsn + "&" + kv
     return dsn + "?" + kv
 
 def get_conn():
+    """
+    Connessione robusta al pooler Supabase:
+    - sslmode=require
+    - connect_timeout per evitare spinner infinito
+    - statement_timeout impostato via SQL (evita problemi URI options)
+    """
     dsn = get_database_url().strip()
     if "sslmode=" not in dsn:
         dsn = _add_param(dsn, "sslmode=require")
     if "connect_timeout=" not in dsn:
         dsn = _add_param(dsn, "connect_timeout=10")
-    if "options=" not in dsn:
-        dsn = _add_param(dsn, "options=-c statement_timeout=30000")
-    return psycopg2.connect(dsn)
+
+    conn = psycopg2.connect(dsn)
+    # set statement_timeout a 30s (in ms) in modo sicuro
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = 30000;")
+        conn.commit()
+    except Exception:
+        # non bloccare l'app se non riesce a settare il timeout
+        pass
+    return conn
 
 def record_hash(d: date, importo_cents: int, causale: str, tipologia: str, link: str | None) -> str:
     base = f"{d.isoformat()}|{importo_cents}|{causale.strip()}|{tipologia}|{(link or '').strip()}"
@@ -129,6 +146,7 @@ def load_spese() -> pd.DataFrame:
     df.drop(columns=["importo_cents"], inplace=True)
     return df
 
+# SQLITE locale (solo migrazione)
 LOCAL_DB_PATH = Path("data") / "spese.db"
 
 def load_spese_from_sqlite(db_path: Path) -> pd.DataFrame:
