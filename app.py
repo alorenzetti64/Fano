@@ -24,11 +24,16 @@ SIDEBAR_CANDIDATES = [
     ASSETS_DIR / "nonni.JPEG",
 ]
 
-# (Facoltativo) +15% font
 st.markdown(
     """
     <style>
-      html { font-size: 115%; }
+      /* Default (PC): normale */
+      html { font-size: 100%; }
+
+      /* Smartphone / schermi piccoli: +30% */
+      @media (max-width: 768px) {
+        html { font-size: 130% !important; }
+      }
     </style>
     """,
     unsafe_allow_html=True,
