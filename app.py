@@ -209,7 +209,7 @@ with st.spinner("Connessione al database..."):
 st.title("Gestionale Nonni")
 st.caption("Radici forti, ali libere.")
 
-menu = st.sidebar.radio("Vai a:", ["➕ Inserisci spesa", "📊 Riepilogo e gestione", "⚙️ Impostazioni"])
+menu = st.sidebar.radio("Vai a:", ["➕ Inserisci spesa", "📊 Riepilogo e gestione", "✏️ Modifica / elimina", "⚙️ Impostazioni"])
 
 img = sidebar_image_path()
 if img is not None:
@@ -294,6 +294,92 @@ elif menu == "📊 Riepilogo e gestione":
         disabled=True,
         column_config={"link": st.column_config.LinkColumn("Documento", display_text="Apri")},
     )
+
+
+elif menu == "✏️ Modifica / elimina":
+    st.subheader("Modifica / elimina record")
+
+    df = load_spese()
+    if df.empty:
+        st.info("Non ci sono record da modificare.")
+        st.stop()
+
+    # Filtri rapidi
+    df["anno"] = pd.to_datetime(df["data"]).dt.year
+    anni = sorted(df["anno"].unique().tolist(), reverse=True)
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        anno_sel = st.selectbox("Anno", ["Tutti"] + [str(a) for a in anni], index=0)
+    with c2:
+        tipo_sel = st.selectbox("Tipologia", ["Tutte"] + TIPOLOGIE, index=0)
+    with c3:
+        search = st.text_input("Cerca nella causale", placeholder="Es. farmacia, Enel, condominio...")
+
+    f = df.copy()
+    if anno_sel != "Tutti":
+        f = f[f["anno"] == int(anno_sel)]
+    if tipo_sel != "Tutte":
+        f = f[f["tipologia"] == tipo_sel]
+    if search.strip():
+        f = f[f["causale"].str.contains(search.strip(), case=False, na=False)]
+
+    f = f.sort_values(["data", "id"], ascending=[False, False]).copy()
+    f_disp = f.copy()
+    f_disp["importo_eur"] = f_disp["importo_eur"].map(lambda x: f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
+
+    st.data_editor(
+        f_disp[["id", "data", "tipologia", "causale", "importo_eur", "link"]],
+        width="stretch",
+        hide_index=True,
+        disabled=True,
+        column_config={"link": st.column_config.LinkColumn("Documento", display_text="Apri")},
+    )
+
+    st.divider()
+    st.write("### Seleziona un record e modifica i campi")
+
+    id_list = f["id"].tolist()
+    sel_id = st.selectbox("ID record", id_list, index=0)
+
+    row = df[df["id"] == sel_id].iloc[0]
+    link_val = row["link"] if isinstance(row["link"], str) else ""
+
+    col_form, col_preview = st.columns([1, 1])
+    with col_form:
+        with st.form("form_edit"):
+            d_new = st.date_input("Data", value=row["data"])
+            tip_new = st.selectbox("Tipologia", TIPOLOGIE, index=TIPOLOGIE.index(row["tipologia"]))
+            imp_new = st.number_input("Importo (€)", min_value=0.0, value=float(row["importo_eur"]), step=1.0, format="%.2f")
+            caus_new = st.text_input("Causale", value=str(row["causale"]))
+            link_new = st.text_input("Link documento", value=str(link_val))
+
+            cA, cB = st.columns(2)
+            save = cA.form_submit_button("💾 Salva modifiche", use_container_width=True)
+            delete = cB.form_submit_button("🗑️ Elimina record", use_container_width=True)
+
+            if save:
+                if not caus_new.strip():
+                    st.error("La causale è obbligatoria.")
+                else:
+                    update_spesa(int(sel_id), d_new, float(imp_new), caus_new, tip_new, link_new)
+                    st.success("Modifiche salvate ✅")
+                    st.rerun()
+
+            if delete:
+                delete_spesa(int(sel_id))
+                st.success("Record eliminato ✅")
+                st.rerun()
+
+    with col_preview:
+        st.write("### Documento")
+        if link_val and str(link_val).strip():
+            embed = dropbox_to_embed_url(str(link_val).strip())
+            st.link_button("Apri documento", embed)
+            render_doc_preview(embed)
+        else:
+            st.info("Nessun link documento per questo record.")
+
 
 else:
     st.subheader("Impostazioni")
