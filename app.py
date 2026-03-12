@@ -1,9 +1,12 @@
+import os
 import sqlite3
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+import hashlib
 
 import pandas as pd
+import psycopg2
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -16,82 +19,105 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- UI SCALE (mobile) ---
+TIPOLOGIE = ["Badanti", "Bollette", "Condominio", "Varie"]
+
+ASSETS_DIR = Path("assets")
+SIDEBAR_CANDIDATES = [
+    ASSETS_DIR / "nonni.png",
+    ASSETS_DIR / "nonni.PNG",
+    ASSETS_DIR / "nonni.jpg",
+    ASSETS_DIR / "nonni.JPG",
+    ASSETS_DIR / "nonni.jpeg",
+    ASSETS_DIR / "nonni.JPEG",
+]
+
+# --- UI SCALE (opzionale) ---
+# Se vuoi togliere questa parte, puoi cancellare questo blocco senza effetti sui dati.
 st.markdown(
     """
     <style>
-      html { font-size: 130%; }
-      /* rende un filo più leggibili anche input e tabelle */
-      .stTextInput input, .stNumberInput input, .stDateInput input, .stSelectbox div, .stTextArea textarea {
-        font-size: 1rem;
-      }
+      html { font-size: 115%; } /* +15% */
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-DB_DIR = Path("data")
-DB_DIR.mkdir(exist_ok=True)
-DB_PATH = DB_DIR / "spese.db"
-
-ASSETS_DIR = Path("assets")
-SIDEBAR_IMAGE = ASSETS_DIR / "nonni.png"
-
-TIPOLOGIE = ["Badanti", "Bollette", "Condominio", "Varie"]
-
 # -----------------------------
-# DB HELPERS
+# SUPABASE / POSTGRES
 # -----------------------------
+def get_database_url() -> str:
+    if "DATABASE_URL" in st.secrets:
+        return str(st.secrets["DATABASE_URL"])
+    env = os.getenv("DATABASE_URL")
+    if env:
+        return env
+    raise RuntimeError("DATABASE_URL non configurata (Streamlit Secrets o variabile ambiente).")
+
 def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    dsn = get_database_url().strip()
+    # Forza SSL su Supabase se non presente
+    if "sslmode=" not in dsn:
+        sep = "&" if "?" in dsn else "?"
+        dsn = f"{dsn}{sep}sslmode=require"
+    return psycopg2.connect(dsn)
 
+def record_hash(d: date, importo_cents: int, causale: str, tipologia: str, link: str | None) -> str:
+    base = f"{d.isoformat()}|{importo_cents}|{causale.strip()}|{tipologia}|{(link or '').strip()}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 def init_db():
     with get_conn() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS spese (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT NOT NULL,
-                importo_cents INTEGER NOT NULL,
-                causale TEXT NOT NULL,
-                tipologia TEXT NOT NULL,
-                link TEXT
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS spese (
+                    id BIGSERIAL PRIMARY KEY,
+                    data DATE NOT NULL,
+                    importo_cents INTEGER NOT NULL,
+                    causale TEXT NOT NULL,
+                    tipologia TEXT NOT NULL,
+                    link TEXT,
+                    rec_hash TEXT NOT NULL UNIQUE
+                );
+                """
             )
-            """
-        )
         conn.commit()
-
 
 def insert_spesa(d: date, importo_eur: float, causale: str, tipologia: str, link: str | None):
     importo_cents = int(round(importo_eur * 100))
+    h = record_hash(d, importo_cents, causale, tipologia, link)
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO spese (data, importo_cents, causale, tipologia, link) VALUES (?, ?, ?, ?, ?)",
-            (d.isoformat(), importo_cents, causale.strip(), tipologia, (link or "").strip() or None),
-        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO spese (data, importo_cents, causale, tipologia, link, rec_hash)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (rec_hash) DO NOTHING
+                """,
+                (d, importo_cents, causale.strip(), tipologia, (link or "").strip() or None, h),
+            )
         conn.commit()
-
 
 def update_spesa(spesa_id: int, d: date, importo_eur: float, causale: str, tipologia: str, link: str | None):
     importo_cents = int(round(importo_eur * 100))
+    h = record_hash(d, importo_cents, causale, tipologia, link)
     with get_conn() as conn:
-        conn.execute(
-            """
-            UPDATE spese
-            SET data = ?, importo_cents = ?, causale = ?, tipologia = ?, link = ?
-            WHERE id = ?
-            """,
-            (d.isoformat(), importo_cents, causale.strip(), tipologia, (link or "").strip() or None, spesa_id),
-        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE spese
+                SET data=%s, importo_cents=%s, causale=%s, tipologia=%s, link=%s, rec_hash=%s
+                WHERE id=%s
+                """,
+                (d, importo_cents, causale.strip(), tipologia, (link or "").strip() or None, h, spesa_id),
+            )
         conn.commit()
-
 
 def delete_spesa(spesa_id: int):
     with get_conn() as conn:
-        conn.execute("DELETE FROM spese WHERE id = ?", (spesa_id,))
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM spese WHERE id=%s", (spesa_id,))
         conn.commit()
-
 
 def load_spese() -> pd.DataFrame:
     with get_conn() as conn:
@@ -106,6 +132,21 @@ def load_spese() -> pd.DataFrame:
     df.drop(columns=["importo_cents"], inplace=True)
     return df
 
+# -----------------------------
+# SQLITE (solo per MIGRAZIONE LOCALE)
+# -----------------------------
+LOCAL_DB_PATH = Path("data") / "spese.db"
+
+def load_spese_from_sqlite(db_path: Path) -> pd.DataFrame:
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    try:
+        df = pd.read_sql_query("SELECT data, importo_cents, causale, tipologia, link FROM spese", conn)
+    finally:
+        conn.close()
+    if df.empty:
+        return df
+    df["data"] = pd.to_datetime(df["data"]).dt.date
+    return df
 
 # -----------------------------
 # DROPBOX HELPERS (preview)
@@ -115,29 +156,24 @@ def dropbox_to_embed_url(url: str) -> str:
         p = urlparse(url)
         if "dropbox.com" not in p.netloc:
             return url
-
         qs = parse_qs(p.query)
-        qs["dl"] = ["0"]  # preview
+        qs["dl"] = ["0"]
         new_query = urlencode(qs, doseq=True)
         return urlunparse((p.scheme, p.netloc, p.path, p.params, new_query, p.fragment))
     except Exception:
         return url
 
-
 def looks_like_image(url: str) -> bool:
     u = url.lower()
     return any(u.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"])
 
-
 def looks_like_pdf(url: str) -> bool:
     return url.lower().endswith(".pdf")
-
 
 def render_doc_preview(url: str, height: int = 520):
     if not url:
         return
     embed = dropbox_to_embed_url(url)
-
     if looks_like_image(embed):
         st.image(embed, width="stretch")
     elif looks_like_pdf(embed) or ("pdf" in embed.lower()):
@@ -146,22 +182,40 @@ def render_doc_preview(url: str, height: int = 520):
         st.info("Anteprima non disponibile per questo tipo di link. Usa il bottone per aprirlo.")
         st.link_button("Apri documento", embed)
 
+def sidebar_image_path() -> Path | None:
+    for p in SIDEBAR_CANDIDATES:
+        if p.exists():
+            return p
+    return None
 
 # -----------------------------
-# UI
+# STARTUP
 # -----------------------------
-init_db()
+try:
+    init_db()
+    DB_OK = True
+    DB_ERR = ""
+except Exception as e:
+    DB_OK = False
+    DB_ERR = str(e)
 
 st.title("Gestionale Nonni")
 st.caption("Radici forti, ali libere.")
 
 menu = st.sidebar.radio("Vai a:", ["➕ Inserisci spesa", "📊 Riepilogo e gestione", "⚙️ Impostazioni"])
 
-# Immagine sotto al menu (se presente)
-if SIDEBAR_IMAGE.exists():
-    st.sidebar.image(str(SIDEBAR_IMAGE), width="stretch")
+img = sidebar_image_path()
+if img is not None:
+    st.sidebar.image(str(img), width="stretch")
 
-# ---- PAGE: INSERIMENTO ----
+if not DB_OK:
+    st.error("Connessione a Supabase non riuscita.")
+    st.code(DB_ERR)
+    st.stop()
+
+# -----------------------------
+# PAGE: INSERIMENTO
+# -----------------------------
 if menu == "➕ Inserisci spesa":
     st.subheader("Inserimento record")
 
@@ -207,7 +261,9 @@ if menu == "➕ Inserisci spesa":
             },
         )
 
-# ---- PAGE: RIEPILOGO + GESTIONE ----
+# -----------------------------
+# PAGE: RIEPILOGO + GESTIONE
+# -----------------------------
 elif menu == "📊 Riepilogo e gestione":
     st.subheader("Riepilogo e gestione record")
 
@@ -315,16 +371,73 @@ elif menu == "📊 Riepilogo e gestione":
         else:
             st.info("Nessun link documento per questo record.")
 
-# ---- PAGE: SETTINGS ----
+# -----------------------------
+# PAGE: IMPOSTAZIONI
+# -----------------------------
 else:
     st.subheader("Impostazioni")
-    st.write(f"**Database:** `{DB_PATH}`")
+
+    st.write("### Database (Supabase)")
+    st.success("Connesso ✅")
 
     df = load_spese()
+    st.caption(f"Record attuali su Supabase: **{len(df)}**")
+
+    st.divider()
+    st.write("### Backup CSV")
     if df.empty:
         st.info("Nessun dato da esportare.")
     else:
-        csv = df.drop(columns=["anno"], errors="ignore").to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Scarica CSV (backup)", data=csv, file_name="gestionale_nonni_backup.csv", mime="text/csv"
-        )
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Scarica CSV (backup)", data=csv, file_name="gestionale_nonni_backup.csv", mime="text/csv")
+
+    st.divider()
+    st.write("### Importa CSV (migrazione / ripristino)")
+    up = st.file_uploader("Carica un CSV esportato dall'app", type=["csv"])
+    if up is not None:
+        imp = pd.read_csv(up)
+        st.write("Anteprima:", imp.head(10))
+        if st.button("Importa nel database", type="primary"):
+            n_ok = 0
+            for _, r in imp.iterrows():
+                try:
+                    d = pd.to_datetime(r["data"]).date()
+                    tip = str(r["tipologia"])
+                    caus = str(r["causale"])
+                    link = None if pd.isna(r.get("link", None)) else str(r.get("link", "")).strip()
+                    impv = r.get("importo_eur", 0)
+                    if isinstance(impv, str):
+                        s = impv.replace("€", "").strip().replace(".", "").replace(",", ".")
+                        val = float(s)
+                    else:
+                        val = float(impv)
+                    insert_spesa(d, val, caus, tip, link)
+                    n_ok += 1
+                except Exception:
+                    continue
+            st.success(f"Import completato: {n_ok} righe inserite (senza duplicati).")
+            st.rerun()
+
+    st.divider()
+    st.write("### Migra da SQLite locale (solo se esiste data/spese.db)")
+    if LOCAL_DB_PATH.exists():
+        st.info(f"Trovato SQLite locale: {LOCAL_DB_PATH}")
+        if st.button("Migra da SQLite a Supabase", type="primary"):
+            df_sql = load_spese_from_sqlite(LOCAL_DB_PATH)
+            if df_sql.empty:
+                st.warning("Il database SQLite non contiene record.")
+            else:
+                n_ins = 0
+                for _, r in df_sql.iterrows():
+                    try:
+                        d = r["data"]
+                        importo_cents = int(r["importo_cents"])
+                        val = importo_cents / 100.0
+                        insert_spesa(d, val, str(r["causale"]), str(r["tipologia"]), r.get("link", None))
+                        n_ins += 1
+                    except Exception:
+                        continue
+                st.success(f"Migrazione completata. Tentati {len(df_sql)} record, importati (no duplicati) {n_ins}.")
+                st.rerun()
+    else:
+        st.caption("Su Streamlit Cloud questo file non esiste: per migrare usa il CSV (qui sopra).")
